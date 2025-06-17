@@ -7,7 +7,12 @@ import io
 import os
 
 # Configure Gemini without dotenv
-genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])  # Store key in Streamlit secrets
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+  # Store key in Streamlit secrets
 
 @st.cache_resource
 def get_gemini_model():
