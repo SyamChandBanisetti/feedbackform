@@ -4,29 +4,34 @@ import plotly.express as px
 import google.generativeai as genai
 from collections import Counter
 import io
-from dotenv import load_dotenv
 import os
 
-load_dotenv()
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+# Configure Gemini without dotenv
+genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])  # Store key in Streamlit secrets
 
 @st.cache_resource
 def get_gemini_model():
     return genai.GenerativeModel("models/gemini-2.0-flash")
 
+# Analyze each feedback response
 def analyze_sentiments_with_gemini(texts):
     model = get_gemini_model()
     all_results = []
 
     for text in texts:
-        if not text.strip():
+        text = text.strip()
+        if not text:
             all_results.append(("NEUTRAL", "Empty response"))
             continue
+
+        # Truncate long text
+        text = text[:400]
 
         prompt = f"""
 You are a sentiment analysis expert. Classify the sentiment of the following text as POSITIVE, NEGATIVE, or NEUTRAL and provide a brief reason.
 
 Text: "{text}"
+
 Return format: <label> - <reason>
 """
         try:
@@ -43,14 +48,15 @@ Return format: <label> - <reason>
             else:
                 label, reason = "NEUTRAL", "Invalid format"
         except Exception as e:
-            label, reason = "NEUTRAL", f"Error: {str(e)}"
+            label, reason = "NEUTRAL", f"API Error"
 
         all_results.append((label, reason))
 
     return all_results
 
-def analyze_sentiment_distribution(series):
-    texts = series.dropna().astype(str).tolist()
+# Analyze overall sentiment for a column
+def analyze_sentiment_distribution(series, max_rows=30):
+    texts = series.dropna().astype(str).tolist()[:max_rows]
     if not texts:
         return None
 
@@ -71,20 +77,27 @@ def analyze_sentiment_distribution(series):
     }
 
     # Gemini Summary Insights
-    model = get_gemini_model()
     summary_prompt = f"""
 Analyze this sentiment breakdown: {percentages}.
-Provide a short summary, insight, and practical recommendation.
+Give a short:
+1. Summary
+2. Insight
+3. Practical recommendation
+
 Return format:
 Summary: ...
 Insights: ...
 Recommendations: ...
 """
-    response = model.generate_content(summary_prompt).text.strip()
+    try:
+        response = get_gemini_model().generate_content(summary_prompt)
+        response_text = response.text.strip()
+    except:
+        response_text = "Summary: Not available\nInsights: API limit reached\nRecommendations: Try again later"
 
-    # Extract parts
+    # Parse summary
     summary = insights = recommendations = ""
-    for line in response.splitlines():
+    for line in response_text.splitlines():
         if line.startswith("Summary:"):
             summary = line.replace("Summary:", "").strip()
         elif line.startswith("Insights:"):
@@ -104,7 +117,7 @@ Recommendations: ...
         "Details": list(zip(texts, sentiment_labels, reasons))
     }
 
-# App UI
+# Streamlit UI
 st.set_page_config(page_title="📊 Gemini Feedback Analyzer", layout="wide")
 st.title("🧠 Gemini-Powered CSV Feedback Analyzer")
 
@@ -114,6 +127,12 @@ if uploaded_file:
     df = pd.read_csv(uploaded_file)
     text_columns = df.select_dtypes(include="object").columns.tolist()
 
+    # Skip unwanted columns
+    ignore_cols = ["timestamp", "email", "id", "name"]
+    text_columns = [col for col in text_columns if col.lower() not in ignore_cols]
+
+    max_rows = st.slider("🔢 Max Responses to Analyze per Question", 10, 100, 30)
+
     if not text_columns:
         st.warning("No text columns found.")
     else:
@@ -121,39 +140,34 @@ if uploaded_file:
 
         for col in text_columns:
             st.markdown(f"---\n### 📌 Column: **{col}**")
+            result = analyze_sentiment_distribution(df[col], max_rows=max_rows)
 
-            result = analyze_sentiment_distribution(df[col])
             if result:
                 col1, col2 = st.columns([1.5, 2])
+                sentiment_data = pd.DataFrame({
+                    "Sentiment": ["Positive", "Negative", "Neutral"],
+                    "Count": [result["Positive"], result["Negative"], result["Neutral"]]
+                })
 
-                # Pie Chart
                 with col1:
-                    sentiment_data = pd.DataFrame({
-                        "Sentiment": ["Positive", "Negative", "Neutral"],
-                        "Count": [result["Positive"], result["Negative"], result["Neutral"]]
-                    })
-                    fig = px.pie(sentiment_data, values="Count", names="Sentiment", title="Sentiment Distribution")
-                    st.plotly_chart(fig, use_container_width=True)
+                    pie = px.pie(sentiment_data, values="Count", names="Sentiment", title="Sentiment Distribution")
+                    st.plotly_chart(pie, use_container_width=True)
 
                 with col2:
-                    st.metric("🧾 Total Responses", result["Total"])
+                    st.metric("🧾 Total", result["Total"])
                     st.metric("✅ Positive", f"{result['Positive']} ({result['Percentages']['Positive']}%)")
                     st.metric("❌ Negative", f"{result['Negative']} ({result['Percentages']['Negative']}%)")
                     st.metric("➖ Neutral", f"{result['Neutral']} ({result['Percentages']['Neutral']}%)")
 
-                    fig2 = px.bar(
-                        sentiment_data,
-                        x="Sentiment", y="Count", color="Sentiment",
-                        title="Sentiment Count", text="Count"
-                    )
-                    st.plotly_chart(fig2, use_container_width=True)
+                    bar = px.bar(sentiment_data, x="Sentiment", y="Count", color="Sentiment", text="Count")
+                    st.plotly_chart(bar, use_container_width=True)
 
                 st.markdown(f"**📝 Summary**: {result['Summary']}")
                 st.markdown(f"**🔎 Insights**: {result['Insights']}")
                 st.markdown(f"**✅ Recommendations**: {result['Recommendations']}")
 
                 with st.expander("🔍 View Sample Responses & Reasoning"):
-                    sample_df = pd.DataFrame(result["Details"], columns=["Response", "Sentiment", "Gemini Reason"])
+                    sample_df = pd.DataFrame(result["Details"], columns=["Response", "Sentiment", "Reason"])
                     st.dataframe(sample_df.head(10), use_container_width=True)
 
                 summary_data.append({
