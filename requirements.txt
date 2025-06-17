@@ -1,6 +1,6 @@
 streamlit
 pandas
 plotly
-openpyxl
-google-generativeai
 python-dotenv
+google-generativeai
+openpyxl
