@@ -5,17 +5,20 @@ import google.generativeai as genai
 from collections import Counter
 import io
 import os
-
-# Load environment variable
 from dotenv import load_dotenv
+import time
+import uuid
+
+# Load .env and configure Gemini
 load_dotenv()
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
+# Cache model
 @st.cache_resource
 def get_gemini_model():
-    return genai.GenerativeModel("models/gemini-2.0-flash")
+    return genai.GenerativeModel("models/gemini-1.5-flash")
 
-# Analyze individual feedback responses
+# Gemini-based sentiment classification
 def analyze_sentiments_with_gemini(texts):
     model = get_gemini_model()
     all_results = []
@@ -26,7 +29,8 @@ def analyze_sentiments_with_gemini(texts):
             all_results.append(("NEUTRAL", "Empty response"))
             continue
 
-        text = text[:400]
+        text = text[:400]  # Truncate if needed
+
         prompt = f"""
 You are a sentiment analysis expert. Classify the sentiment of the following text as POSITIVE, NEGATIVE, or NEUTRAL and provide a brief reason.
 
@@ -38,46 +42,46 @@ Return format: <label> - <reason>
         try:
             response = model.generate_content(prompt)
             content = response.text.strip()
+
             if "-" in content:
                 label, reason = content.split("-", 1)
                 label = label.strip().upper()
                 reason = reason.strip()
                 if label not in {"POSITIVE", "NEGATIVE", "NEUTRAL"}:
-                    label = "NEUTRAL"
-                    reason = "Unclear response"
+                    label, reason = "NEUTRAL", "Unrecognized sentiment"
             else:
-                label, reason = "NEUTRAL", "Invalid format"
-        except:
+                label, reason = "NEUTRAL", "Invalid response format"
+
+        except Exception as e:
             label, reason = "NEUTRAL", "API Error"
+
         all_results.append((label, reason))
 
     return all_results
 
-# Analyze overall sentiment for a column
-def analyze_sentiment_distribution(series):
+# Analyze each column
+def analyze_sentiment_distribution(series, column_name):
     texts = series.dropna().astype(str).tolist()
+
     if not texts:
         return None
 
     results = analyze_sentiments_with_gemini(texts)
-    sentiment_labels = [res[0] for res in results]
+    labels = [res[0] for res in results]
     reasons = [res[1] for res in results]
 
-    counts = Counter(sentiment_labels)
+    counts = Counter(labels)
     total = len(results)
-    positive = counts.get("POSITIVE", 0)
-    negative = counts.get("NEGATIVE", 0)
-    neutral = counts.get("NEUTRAL", 0)
 
-    percentages = {
-        "Positive": round((positive / total) * 100, 1),
-        "Negative": round((negative / total) * 100, 1),
-        "Neutral": round((neutral / total) * 100, 1)
+    percent = {
+        "Positive": round((counts.get("POSITIVE", 0) / total) * 100, 1),
+        "Negative": round((counts.get("NEGATIVE", 0) / total) * 100, 1),
+        "Neutral": round((counts.get("NEUTRAL", 0) / total) * 100, 1)
     }
 
-    # Summary from Gemini
+    # Summarization prompt
     summary_prompt = f"""
-Analyze this sentiment breakdown: {percentages}.
+Analyze this sentiment breakdown for the question: "{column_name}" — {percent}.
 Give a short:
 1. Summary
 2. Insight
@@ -92,7 +96,7 @@ Recommendations: ...
     try:
         response = get_gemini_model().generate_content(summary_prompt)
         response_text = response.text.strip()
-    except:
+    except Exception:
         response_text = "Summary: Not available\nInsights: API limit reached\nRecommendations: Try again later"
 
     summary = insights = recommendations = ""
@@ -106,89 +110,96 @@ Recommendations: ...
 
     return {
         "Total": total,
-        "Positive": positive,
-        "Negative": negative,
-        "Neutral": neutral,
-        "Percentages": percentages,
+        "Positive": counts.get("POSITIVE", 0),
+        "Negative": counts.get("NEGATIVE", 0),
+        "Neutral": counts.get("NEUTRAL", 0),
+        "Percentages": percent,
         "Summary": summary,
         "Insights": insights,
         "Recommendations": recommendations,
-        "Details": list(zip(texts, sentiment_labels, reasons))
+        "Details": list(zip(texts, labels, reasons))
     }
 
 # Streamlit UI
-st.set_page_config(page_title="📊 Gemini Feedback Analyzer", layout="wide")
-st.title("🧠 Gemini-Powered CSV Feedback Analyzer")
+st.set_page_config(page_title="📊 Feedback Sentiment Analyzer", layout="wide")
+st.title("🧠 Gemini-Powered Feedback Analyzer")
+st.markdown("Upload a feedback CSV file to get automated sentiment analysis and insights.")
 
-uploaded_file = st.file_uploader("📂 Upload a CSV file", type=["csv"])
+uploaded_file = st.file_uploader("📂 Upload CSV", type=["csv"])
 
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
     text_columns = df.select_dtypes(include="object").columns.tolist()
 
-    ignore_cols = ["timestamp", "email", "id", "name"]
-    text_columns = [col for col in text_columns if col.lower() not in ignore_cols]
+    ignore = ["timestamp", "email", "id", "name"]
+    text_columns = [col for col in text_columns if col.lower() not in ignore]
 
     if not text_columns:
-        st.warning("No text-based columns found to analyze.")
+        st.warning("No text-based columns detected.")
     else:
         summary_data = []
 
         for idx, col in enumerate(text_columns):
-            with st.container():
-                st.markdown(f"---\n### 📌 Column {idx+1}: **{col}**")
-                result = analyze_sentiment_distribution(df[col])
+            st.markdown(f"---\n### 📌 Question {idx+1}: **{col}**")
 
-                if result:
-                    sentiment_data = pd.DataFrame({
-                        "Sentiment": ["Positive", "Negative", "Neutral"],
-                        "Count": [result["Positive"], result["Negative"], result["Neutral"]]
-                    })
+            result = analyze_sentiment_distribution(df[col], col)
+            if not result:
+                st.warning("No valid responses found.")
+                continue
 
-                    col1, col2 = st.columns([1.5, 2])
+            col1, col2 = st.columns([1.5, 2])
 
-                    with col1:
-                        pie = px.pie(sentiment_data, values="Count", names="Sentiment", title="Sentiment Distribution")
-                        st.plotly_chart(pie, use_container_width=True)
+            sentiment_data = pd.DataFrame({
+                "Sentiment": ["Positive", "Negative", "Neutral"],
+                "Count": [result["Positive"], result["Negative"], result["Neutral"]]
+            })
 
-                    with col2:
-                        st.metric("🧾 Total", result["Total"])
-                        st.metric("✅ Positive", f"{result['Positive']} ({result['Percentages']['Positive']}%)")
-                        st.metric("❌ Negative", f"{result['Negative']} ({result['Percentages']['Negative']}%)")
-                        st.metric("➖ Neutral", f"{result['Neutral']} ({result['Percentages']['Neutral']}%)")
+            unique_id = str(uuid.uuid4())[:8]  # ensure unique chart ID
 
-                        bar = px.bar(sentiment_data, x="Sentiment", y="Count", color="Sentiment", text="Count")
-                        st.plotly_chart(bar, use_container_width=True)
+            with col1:
+                pie = px.pie(sentiment_data, values="Count", names="Sentiment", title="Sentiment Distribution")
+                pie.update_traces(textinfo="percent+label")
+                st.plotly_chart(pie, use_container_width=True, key=f"pie-{unique_id}")
 
-                    st.markdown(f"**📝 Summary**: {result['Summary']}")
-                    st.markdown(f"**🔎 Insights**: {result['Insights']}")
-                    st.markdown(f"**✅ Recommendations**: {result['Recommendations']}")
+            with col2:
+                st.metric("🧾 Total", result["Total"])
+                st.metric("✅ Positive", f"{result['Positive']} ({result['Percentages']['Positive']}%)")
+                st.metric("❌ Negative", f"{result['Negative']} ({result['Percentages']['Negative']}%)")
+                st.metric("➖ Neutral", f"{result['Neutral']} ({result['Percentages']['Neutral']}%)")
 
-                    with st.expander("🔍 View Sample Responses & Reasoning"):
-                        sample_df = pd.DataFrame(result["Details"], columns=["Response", "Sentiment", "Reason"])
-                        st.dataframe(sample_df.head(10), use_container_width=True)
+                bar = px.bar(sentiment_data, x="Sentiment", y="Count", color="Sentiment", text="Count")
+                st.plotly_chart(bar, use_container_width=True, key=f"bar-{unique_id}")
 
-                    summary_data.append({
-                        "Column": col,
-                        "Total Responses": result["Total"],
-                        "Positive %": result['Percentages']['Positive'],
-                        "Negative %": result['Percentages']['Negative'],
-                        "Neutral %": result['Percentages']['Neutral'],
-                        "Summary": result["Summary"],
-                        "Insights": result["Insights"],
-                        "Recommendations": result["Recommendations"]
-                    })
+            st.markdown(f"**📝 Summary**: {result['Summary']}")
+            st.markdown(f"**🔎 Insights**: {result['Insights']}")
+            st.markdown(f"**✅ Recommendations**: {result['Recommendations']}")
 
+            with st.expander("🔍 Sample Responses & Reasoning"):
+                detail_df = pd.DataFrame(result["Details"], columns=["Response", "Sentiment", "Reason"])
+                st.dataframe(detail_df.head(10), use_container_width=True)
+
+            summary_data.append({
+                "Question": col,
+                "Total": result["Total"],
+                "Positive %": result["Percentages"]["Positive"],
+                "Negative %": result["Percentages"]["Negative"],
+                "Neutral %": result["Percentages"]["Neutral"],
+                "Summary": result["Summary"],
+                "Insights": result["Insights"],
+                "Recommendations": result["Recommendations"]
+            })
+
+        # Final report
         if summary_data:
-            st.markdown("### 📥 Download Report")
+            st.markdown("### 📥 Download Overall Report")
             summary_df = pd.DataFrame(summary_data)
             buffer = io.BytesIO()
             summary_df.to_excel(buffer, index=False)
             buffer.seek(0)
 
             st.download_button(
-                label="📊 Download Excel Report",
+                label="📊 Download Excel Summary",
                 data=buffer,
-                file_name="gemini_sentiment_analysis_report.xlsx",
+                file_name="sentiment_feedback_report.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
