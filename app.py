@@ -5,20 +5,22 @@ import google.generativeai as genai
 from collections import Counter
 import io
 import os
-
-# Configure Gemini without dotenv
 from dotenv import load_dotenv
-import os
 
+# Load .env and configure Gemini
 load_dotenv()
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-  # Store key in Streamlit secrets
+api_key = os.getenv("GOOGLE_API_KEY")
+if not api_key:
+    st.error("🚫 GOOGLE_API_KEY not found in .env file.")
+    st.stop()
+
+genai.configure(api_key=api_key)
 
 @st.cache_resource
 def get_gemini_model():
     return genai.GenerativeModel("models/gemini-2.0-flash")
 
-# Analyze each feedback response
+# Analyze sentiments using Gemini
 def analyze_sentiments_with_gemini(texts):
     model = get_gemini_model()
     all_results = []
@@ -29,8 +31,7 @@ def analyze_sentiments_with_gemini(texts):
             all_results.append(("NEUTRAL", "Empty response"))
             continue
 
-        # Truncate long text
-        text = text[:400]
+        text = text[:400]  # truncate long input
 
         prompt = f"""
 You are a sentiment analysis expert. Classify the sentiment of the following text as POSITIVE, NEGATIVE, or NEUTRAL and provide a brief reason.
@@ -52,16 +53,18 @@ Return format: <label> - <reason>
                     reason = "Unclear response"
             else:
                 label, reason = "NEUTRAL", "Invalid format"
-        except Exception as e:
-            label, reason = "NEUTRAL", f"API Error"
+        except Exception:
+            label, reason = "NEUTRAL", "API Error"
 
         all_results.append((label, reason))
 
     return all_results
 
-# Analyze overall sentiment for a column
-def analyze_sentiment_distribution(series, max_rows=30):
-    texts = series.dropna().astype(str).tolist()[:max_rows]
+# Sentiment distribution + summary
+def analyze_sentiment_distribution(series, max_rows=None):
+    texts = series.dropna().astype(str).tolist()
+    if max_rows:
+        texts = texts[:max_rows]
     if not texts:
         return None
 
@@ -81,7 +84,7 @@ def analyze_sentiment_distribution(series, max_rows=30):
         "Neutral": round((neutral / total) * 100, 1)
     }
 
-    # Gemini Summary Insights
+    # Generate insights with Gemini
     summary_prompt = f"""
 Analyze this sentiment breakdown: {percentages}.
 Give a short:
@@ -98,9 +101,8 @@ Recommendations: ...
         response = get_gemini_model().generate_content(summary_prompt)
         response_text = response.text.strip()
     except:
-        response_text = "Summary: Not available\nInsights: API limit reached\nRecommendations: Try again later"
+        response_text = "Summary: Not available\nInsights: API error\nRecommendations: Try again later"
 
-    # Parse summary
     summary = insights = recommendations = ""
     for line in response_text.splitlines():
         if line.startswith("Summary:"):
@@ -122,7 +124,8 @@ Recommendations: ...
         "Details": list(zip(texts, sentiment_labels, reasons))
     }
 
-# Streamlit UI
+# --- Streamlit UI ---
+
 st.set_page_config(page_title="📊 Gemini Feedback Analyzer", layout="wide")
 st.title("🧠 Gemini-Powered CSV Feedback Analyzer")
 
@@ -132,14 +135,18 @@ if uploaded_file:
     df = pd.read_csv(uploaded_file)
     text_columns = df.select_dtypes(include="object").columns.tolist()
 
-    # Skip unwanted columns
     ignore_cols = ["timestamp", "email", "id", "name"]
     text_columns = [col for col in text_columns if col.lower() not in ignore_cols]
 
-    max_rows = st.slider("🔢 Max Responses to Analyze per Question", 10, 100, 30)
+    st.markdown("✅ Text columns automatically selected for analysis:")
+    st.write(text_columns)
+
+    # Optional limit
+    limit_rows = st.checkbox("🔢 Limit number of responses per column?", value=False)
+    max_rows = st.slider("How many to analyze per column?", 10, 100, 30) if limit_rows else None
 
     if not text_columns:
-        st.warning("No text columns found.")
+        st.warning("No valid text columns found.")
     else:
         summary_data = []
 
@@ -187,7 +194,7 @@ if uploaded_file:
                 })
 
         if summary_data:
-            st.markdown("### 📥 Download Report")
+            st.markdown("### 📥 Download Full Sentiment Summary Report")
             summary_df = pd.DataFrame(summary_data)
             buffer = io.BytesIO()
             summary_df.to_excel(buffer, index=False)
