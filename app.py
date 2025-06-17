@@ -25,7 +25,7 @@ def analyze_sentiments_with_gemini(texts):
             all_results.append(("NEUTRAL", "Empty response"))
             continue
 
-        text = text[:400]  # Trim to avoid long input
+        text = text[:400]  # Truncate long inputs
         prompt = f"""
 You are a sentiment analysis expert. Classify the sentiment of the following text as POSITIVE, NEGATIVE, or NEUTRAL and provide a brief reason.
 
@@ -106,24 +106,27 @@ if uploaded_file:
             result = analyze_sentiment_distribution(df[col])
 
             if result:
-                col1, col2 = st.columns([1.5, 2])
                 sentiment_data = pd.DataFrame({
                     "Sentiment": ["Positive", "Negative", "Neutral"],
                     "Count": [result["Positive"], result["Negative"], result["Neutral"]]
                 })
 
+                col1, col2 = st.columns([1.5, 2])
+
                 with col1:
-                    pie = px.pie(sentiment_data, values="Count", names="Sentiment", title="Sentiment Distribution")
-                    st.plotly_chart(pie, use_container_width=True)
+                    with st.container():
+                        pie = px.pie(sentiment_data, values="Count", names="Sentiment", title="Sentiment Distribution")
+                        st.plotly_chart(pie, use_container_width=True)
 
                 with col2:
-                    st.metric("🧾 Total", result["Total"])
-                    st.metric("✅ Positive", f"{result['Positive']} ({result['Percentages']['Positive']}%)")
-                    st.metric("❌ Negative", f"{result['Negative']} ({result['Percentages']['Negative']}%)")
-                    st.metric("➖ Neutral", f"{result['Neutral']} ({result['Percentages']['Neutral']}%)")
+                    with st.container():
+                        st.metric("🧾 Total", result["Total"])
+                        st.metric("✅ Positive", f"{result['Positive']} ({result['Percentages']['Positive']}%)")
+                        st.metric("❌ Negative", f"{result['Negative']} ({result['Percentages']['Negative']}%)")
+                        st.metric("➖ Neutral", f"{result['Neutral']} ({result['Percentages']['Neutral']}%)")
 
-                    bar = px.bar(sentiment_data, x="Sentiment", y="Count", color="Sentiment", text="Count")
-                    st.plotly_chart(bar, use_container_width=True)
+                        bar = px.bar(sentiment_data, x="Sentiment", y="Count", color="Sentiment", text="Count")
+                        st.plotly_chart(bar, use_container_width=True)
 
                 with st.expander("🔍 View Sample Responses & Reasoning"):
                     sample_df = pd.DataFrame(result["Details"], columns=["Response", "Sentiment", "Reason"])
