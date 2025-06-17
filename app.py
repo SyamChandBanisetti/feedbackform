@@ -7,7 +7,7 @@ import io
 import os
 from dotenv import load_dotenv
 
-# Load API key from .env
+# Load environment variables
 load_dotenv()
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
@@ -25,7 +25,7 @@ def analyze_sentiments_with_gemini(texts):
             all_results.append(("NEUTRAL", "Empty response"))
             continue
 
-        text = text[:400]
+        text = text[:400]  # Trim to avoid long input
         prompt = f"""
 You are a sentiment analysis expert. Classify the sentiment of the following text as POSITIVE, NEGATIVE, or NEUTRAL and provide a brief reason.
 
@@ -42,20 +42,19 @@ Return format: <label> - <reason>
                 label = label.strip().upper()
                 reason = reason.strip()
                 if label not in {"POSITIVE", "NEGATIVE", "NEUTRAL"}:
-                    label, reason = "NEUTRAL", "Unclear response"
+                    label = "NEUTRAL"
+                    reason = "Unclear response"
             else:
                 label, reason = "NEUTRAL", "Invalid format"
-        except Exception:
+        except:
             label, reason = "NEUTRAL", "API Error"
 
         all_results.append((label, reason))
+
     return all_results
 
-def analyze_sentiment_distribution(series, max_rows=None):
+def analyze_sentiment_distribution(series):
     texts = series.dropna().astype(str).tolist()
-    if max_rows:
-        texts = texts[:max_rows]
-
     if not texts:
         return None
 
@@ -75,46 +74,16 @@ def analyze_sentiment_distribution(series, max_rows=None):
         "Neutral": round((neutral / total) * 100, 1)
     }
 
-    summary_prompt = f"""
-Analyze this sentiment breakdown: {percentages}.
-Give a short:
-1. Summary
-2. Insight
-3. Practical recommendation
-
-Return format:
-Summary: ...
-Insights: ...
-Recommendations: ...
-"""
-    try:
-        response = get_gemini_model().generate_content(summary_prompt)
-        response_text = response.text.strip()
-    except:
-        response_text = "Summary: Not available\nInsights: API limit reached\nRecommendations: Try again later"
-
-    summary = insights = recommendations = ""
-    for line in response_text.splitlines():
-        if line.startswith("Summary:"):
-            summary = line.replace("Summary:", "").strip()
-        elif line.startswith("Insights:"):
-            insights = line.replace("Insights:", "").strip()
-        elif line.startswith("Recommendations:"):
-            recommendations = line.replace("Recommendations:", "").strip()
-
     return {
         "Total": total,
         "Positive": positive,
         "Negative": negative,
         "Neutral": neutral,
         "Percentages": percentages,
-        "Summary": summary,
-        "Insights": insights,
-        "Recommendations": recommendations,
         "Details": list(zip(texts, sentiment_labels, reasons))
     }
 
-# 🌟 Streamlit UI
+# --- Streamlit UI ---
 st.set_page_config(page_title="📊 Gemini Feedback Analyzer", layout="wide")
 st.title("🧠 Gemini-Powered CSV Feedback Analyzer")
 
@@ -127,9 +96,6 @@ if uploaded_file:
     ignore_cols = ["timestamp", "email", "id", "name"]
     text_columns = [col for col in text_columns if col.lower() not in ignore_cols]
 
-    analyze_all = st.checkbox("📈 Analyze all rows?", value=True)
-    max_rows = None if analyze_all else st.slider("🔢 Max Responses to Analyze per Question", 10, 100, 30)
-
     if not text_columns:
         st.warning("No suitable text columns found.")
     else:
@@ -137,11 +103,10 @@ if uploaded_file:
 
         for col in text_columns:
             st.markdown(f"---\n### 📌 Column: **{col}**")
-            result = analyze_sentiment_distribution(df[col], max_rows=max_rows)
+            result = analyze_sentiment_distribution(df[col])
 
             if result:
                 col1, col2 = st.columns([1.5, 2])
-
                 sentiment_data = pd.DataFrame({
                     "Sentiment": ["Positive", "Negative", "Neutral"],
                     "Count": [result["Positive"], result["Negative"], result["Neutral"]]
@@ -149,7 +114,7 @@ if uploaded_file:
 
                 with col1:
                     pie = px.pie(sentiment_data, values="Count", names="Sentiment", title="Sentiment Distribution")
-                    st.plotly_chart(pie, use_container_width=True, key=f"pie-{col}")
+                    st.plotly_chart(pie, use_container_width=True)
 
                 with col2:
                     st.metric("🧾 Total", result["Total"])
@@ -158,11 +123,7 @@ if uploaded_file:
                     st.metric("➖ Neutral", f"{result['Neutral']} ({result['Percentages']['Neutral']}%)")
 
                     bar = px.bar(sentiment_data, x="Sentiment", y="Count", color="Sentiment", text="Count")
-                    st.plotly_chart(bar, use_container_width=True, key=f"bar-{col}")
-
-                st.markdown(f"**📝 Summary**: {result['Summary']}")
-                st.markdown(f"**🔎 Insights**: {result['Insights']}")
-                st.markdown(f"**✅ Recommendations**: {result['Recommendations']}")
+                    st.plotly_chart(bar, use_container_width=True)
 
                 with st.expander("🔍 View Sample Responses & Reasoning"):
                     sample_df = pd.DataFrame(result["Details"], columns=["Response", "Sentiment", "Reason"])
@@ -174,12 +135,45 @@ if uploaded_file:
                     "Positive %": result['Percentages']['Positive'],
                     "Negative %": result['Percentages']['Negative'],
                     "Neutral %": result['Percentages']['Neutral'],
-                    "Summary": result["Summary"],
-                    "Insights": result["Insights"],
-                    "Recommendations": result["Recommendations"]
                 })
 
+        # --- Consolidated Gemini Summary ---
         if summary_data:
+            st.markdown("## 🧾 📋 Consolidated Insights from All Feedback")
+
+            prompt = "You are a feedback analyst. Below are sentiment percentages for different questions:\n\n"
+            for entry in summary_data:
+                prompt += (
+                    f"Question: {entry['Column']}\n"
+                    f"Positive: {entry['Positive %']}%, Negative: {entry['Negative %']}%, Neutral: {entry['Neutral %']}%\n\n"
+                )
+
+            prompt += """
+Give a summarized report including:
+1. Key positive highlights
+2. Areas needing improvement
+3. Actionable recommendations for the organizer
+
+Format:
+Highlights:
+...
+
+Improvements:
+...
+
+Recommendations:
+...
+"""
+
+            try:
+                response = get_gemini_model().generate_content(prompt)
+                report = response.text.strip()
+            except:
+                report = "**Highlights:** Not available\n**Improvements:** API limit reached\n**Recommendations:** Try again later"
+
+            st.markdown(report)
+
+            # --- Downloadable Report ---
             st.markdown("### 📥 Download Report")
             summary_df = pd.DataFrame(summary_data)
             buffer = io.BytesIO()
