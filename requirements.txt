@@ -1,6 +1,6 @@
 streamlit
 pandas
-transformers
-torch
 plotly
 openpyxl
+google-generativeai
+python-dotenv
