@@ -7,20 +7,14 @@ import io
 import os
 from dotenv import load_dotenv
 
-# Load .env and configure Gemini
+# Load API key from .env
 load_dotenv()
-api_key = os.getenv("GOOGLE_API_KEY")
-if not api_key:
-    st.error("🚫 GOOGLE_API_KEY not found in .env file.")
-    st.stop()
-
-genai.configure(api_key=api_key)
+genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
 @st.cache_resource
 def get_gemini_model():
     return genai.GenerativeModel("models/gemini-2.0-flash")
 
-# Analyze sentiments using Gemini
 def analyze_sentiments_with_gemini(texts):
     model = get_gemini_model()
     all_results = []
@@ -31,8 +25,7 @@ def analyze_sentiments_with_gemini(texts):
             all_results.append(("NEUTRAL", "Empty response"))
             continue
 
-        text = text[:400]  # truncate long input
-
+        text = text[:400]
         prompt = f"""
 You are a sentiment analysis expert. Classify the sentiment of the following text as POSITIVE, NEGATIVE, or NEUTRAL and provide a brief reason.
 
@@ -49,22 +42,20 @@ Return format: <label> - <reason>
                 label = label.strip().upper()
                 reason = reason.strip()
                 if label not in {"POSITIVE", "NEGATIVE", "NEUTRAL"}:
-                    label = "NEUTRAL"
-                    reason = "Unclear response"
+                    label, reason = "NEUTRAL", "Unclear response"
             else:
                 label, reason = "NEUTRAL", "Invalid format"
         except Exception:
             label, reason = "NEUTRAL", "API Error"
 
         all_results.append((label, reason))
-
     return all_results
 
-# Sentiment distribution + summary
 def analyze_sentiment_distribution(series, max_rows=None):
     texts = series.dropna().astype(str).tolist()
     if max_rows:
         texts = texts[:max_rows]
+
     if not texts:
         return None
 
@@ -84,7 +75,6 @@ def analyze_sentiment_distribution(series, max_rows=None):
         "Neutral": round((neutral / total) * 100, 1)
     }
 
-    # Generate insights with Gemini
     summary_prompt = f"""
 Analyze this sentiment breakdown: {percentages}.
 Give a short:
@@ -101,7 +91,7 @@ Recommendations: ...
         response = get_gemini_model().generate_content(summary_prompt)
         response_text = response.text.strip()
     except:
-        response_text = "Summary: Not available\nInsights: API error\nRecommendations: Try again later"
+        response_text = "Summary: Not available\nInsights: API limit reached\nRecommendations: Try again later"
 
     summary = insights = recommendations = ""
     for line in response_text.splitlines():
@@ -124,8 +114,7 @@ Recommendations: ...
         "Details": list(zip(texts, sentiment_labels, reasons))
     }
 
-# --- Streamlit UI ---
-
+# 🌟 Streamlit UI
 st.set_page_config(page_title="📊 Gemini Feedback Analyzer", layout="wide")
 st.title("🧠 Gemini-Powered CSV Feedback Analyzer")
 
@@ -138,15 +127,11 @@ if uploaded_file:
     ignore_cols = ["timestamp", "email", "id", "name"]
     text_columns = [col for col in text_columns if col.lower() not in ignore_cols]
 
-    st.markdown("✅ Text columns automatically selected for analysis:")
-    st.write(text_columns)
-
-    # Optional limit
-    limit_rows = st.checkbox("🔢 Limit number of responses per column?", value=False)
-    max_rows = st.slider("How many to analyze per column?", 10, 100, 30) if limit_rows else None
+    analyze_all = st.checkbox("📈 Analyze all rows?", value=True)
+    max_rows = None if analyze_all else st.slider("🔢 Max Responses to Analyze per Question", 10, 100, 30)
 
     if not text_columns:
-        st.warning("No valid text columns found.")
+        st.warning("No suitable text columns found.")
     else:
         summary_data = []
 
@@ -156,6 +141,7 @@ if uploaded_file:
 
             if result:
                 col1, col2 = st.columns([1.5, 2])
+
                 sentiment_data = pd.DataFrame({
                     "Sentiment": ["Positive", "Negative", "Neutral"],
                     "Count": [result["Positive"], result["Negative"], result["Neutral"]]
@@ -163,7 +149,7 @@ if uploaded_file:
 
                 with col1:
                     pie = px.pie(sentiment_data, values="Count", names="Sentiment", title="Sentiment Distribution")
-                    st.plotly_chart(pie, use_container_width=True)
+                    st.plotly_chart(pie, use_container_width=True, key=f"pie-{col}")
 
                 with col2:
                     st.metric("🧾 Total", result["Total"])
@@ -172,7 +158,7 @@ if uploaded_file:
                     st.metric("➖ Neutral", f"{result['Neutral']} ({result['Percentages']['Neutral']}%)")
 
                     bar = px.bar(sentiment_data, x="Sentiment", y="Count", color="Sentiment", text="Count")
-                    st.plotly_chart(bar, use_container_width=True)
+                    st.plotly_chart(bar, use_container_width=True, key=f"bar-{col}")
 
                 st.markdown(f"**📝 Summary**: {result['Summary']}")
                 st.markdown(f"**🔎 Insights**: {result['Insights']}")
@@ -194,7 +180,7 @@ if uploaded_file:
                 })
 
         if summary_data:
-            st.markdown("### 📥 Download Full Sentiment Summary Report")
+            st.markdown("### 📥 Download Report")
             summary_df = pd.DataFrame(summary_data)
             buffer = io.BytesIO()
             summary_df.to_excel(buffer, index=False)
