@@ -12,7 +12,7 @@ genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
 @st.cache_resource
 def get_gemini_model():
-    return genai.GenerativeModel("models/gemini-1.5-flash")
+    return genai.GenerativeModel("models/gemini-2.0-flash")
 
 def analyze_sentiments_with_gemini(texts):
     model = get_gemini_model()
