@@ -17,7 +17,7 @@ st.title("🧠 Gemini-Powered Feedback Analyzer")
 
 @st.cache_resource
 def get_gemini_model():
-    return genai.GenerativeModel("models/gemini-2.0-pro")
+    return genai.GenerativeModel("models/gemini-2.0-flash")
 
 def chunked(iterable, size):
     args = [iter(iterable)] * size
