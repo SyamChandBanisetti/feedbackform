@@ -5,21 +5,26 @@ import plotly.express as px
 import streamlit as st
 from collections import Counter
 from dotenv import load_dotenv
+import google.generativeai as genai
 from itertools import zip_longest
-import openai
 
-# Load OpenAI API key
+# Load Google API key
 load_dotenv()
-openai.api_key = os.getenv("OPENAI_API_KEY")
+genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
-st.set_page_config(page_title="OpenAI Feedback Analyzer", layout="wide")
-st.title("🧠 OpenAI-Powered Feedback Analyzer")
+st.set_page_config(page_title="Gemini Feedback Analyzer", layout="wide")
+st.title("🧠 Gemini-Powered Feedback Analyzer")
+
+@st.cache_resource
+def get_gemini_model():
+    return genai.GenerativeModel("models/gemini-2.0-pro")
 
 def chunked(iterable, size):
     args = [iter(iterable)] * size
     return zip_longest(*args)
 
-def classify_sentiments(texts, model="gpt-3.5-turbo"):
+def classify_sentiments(texts):
+    model = get_gemini_model()
     results = []
     for text in texts:
         text = text.strip()
@@ -27,49 +32,33 @@ def classify_sentiments(texts, model="gpt-3.5-turbo"):
             results.append(("NEUTRAL", "Empty response"))
             continue
         text = text[:400]
-        prompt = f"""Classify the sentiment of the following response as POSITIVE, NEGATIVE, or NEUTRAL.
-Also explain briefly why.
+        prompt = f"""You are a sentiment analysis expert. Classify the sentiment of the following text as POSITIVE, NEGATIVE, or NEUTRAL and provide a short reason.
 
-Response: "{text}"
+Text: "{text}"
 
-Respond in the format:
-Label: <sentiment>
-Reason: <reason>
-"""
+Return format: <label> - <reason>"""
         try:
-            completion = openai.ChatCompletion.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            content = completion.choices[0].message.content.strip()
-            label = "NEUTRAL"
-            reason = "Not parsed"
-
-            for line in content.splitlines():
-                if line.lower().startswith("label:"):
-                    label = line.split(":", 1)[1].strip().upper()
-                elif line.lower().startswith("reason:"):
-                    reason = line.split(":", 1)[1].strip()
-
-            if label not in ["POSITIVE", "NEGATIVE", "NEUTRAL"]:
-                label = "NEUTRAL"
-                reason = "Invalid classification"
-        except Exception as e:
-            label = "NEUTRAL"
-            reason = f"API Error: {e}"
+            response = model.generate_content(prompt).text.strip()
+            if "-" in response:
+                label, reason = response.split("-", 1)
+                label = label.strip().upper()
+                reason = reason.strip()
+                if label not in {"POSITIVE", "NEGATIVE", "NEUTRAL"}:
+                    label, reason = "NEUTRAL", "Unclear response"
+            else:
+                label, reason = "NEUTRAL", "Invalid format"
+        except Exception:
+            label, reason = "NEUTRAL", "API Error or limit reached"
         results.append((label, reason))
     return results
 
-def summarize_sentiments(question, percentages, model="gpt-3.5-turbo"):
-    prompt = f"""Analyze the following feedback sentiment percentages for the question:
-"{question}"
+def summarize_sentiments(question, percentages):
+    model = get_gemini_model()
+    prompt = f"""You are a feedback expert. Analyze this sentiment breakdown for the question: "{question}".
 
-Percentages:
-Positive: {percentages['Positive']}%
-Negative: {percentages['Negative']}%
-Neutral: {percentages['Neutral']}%
+Breakdown: {percentages}
 
-Provide:
+Give:
 1. Summary
 2. Insight
 3. Recommendation
@@ -80,13 +69,9 @@ Insights: ...
 Recommendations: ...
 """
     try:
-        completion = openai.ChatCompletion.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        content = completion.choices[0].message.content.strip()
+        response = model.generate_content(prompt).text.strip()
         summary = insight = reco = ""
-        for line in content.splitlines():
+        for line in response.splitlines():
             if line.startswith("Summary:"):
                 summary = line.replace("Summary:", "").strip()
             elif line.startswith("Insights:"):
@@ -188,7 +173,7 @@ if uploaded_file:
         response_df.to_excel(writer, sheet_name="Responses", index=False)
     output.seek(0)
     st.download_button("📥 Download Excel Report", data=output,
-                       file_name="openai_feedback_report.xlsx",
+                       file_name="gemini_feedback_report.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 else:
     st.info("Please upload a CSV file to analyze.")
